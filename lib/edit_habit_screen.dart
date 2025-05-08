@@ -42,8 +42,6 @@ class _EditHabitScreenState extends State<EditHabitScreen> {
     _currentValueCtrl = TextEditingController(
       text: _currentValue.toStringAsFixed(1),
     );
-
-    _entryDate = widget.existingEntry?.date ?? DateTime.now();
   }
 
   @override
@@ -85,11 +83,12 @@ class _EditHabitScreenState extends State<EditHabitScreen> {
     );
 
     final existing = widget.existingEntry;
-    final sameDay = existing != null &&
+    final sameDay =
+        existing != null &&
         DateFormat('yyyy-MM-dd').format(existing.date) ==
             DateFormat('yyyy-MM-dd').format(_entryDate);
 
-    final id        = sameDay ? existing!.id : const Uuid().v4();
+    final id = sameDay ? existing!.id : const Uuid().v4();
     final createdAt = sameDay ? existing!.createdAt : DateTime.now();
     final updatedAt = DateTime.now();
 

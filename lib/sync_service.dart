@@ -17,7 +17,9 @@ void _showStatus(String message) {
 
 class SyncService {
   static final SyncService _instance = SyncService._();
+
   factory SyncService() => _instance;
+
   SyncService._();
 
   final _dbHelper = DbHelper();
@@ -27,16 +29,16 @@ class SyncService {
   Future<void> deleteEntriesForHabit(String habitTitle) async {
     await _dbHelper.clearEntriesForHabit(habitTitle);
 
-    final snapshot = await _firestore
-        .collection('entries')
-        .where('habitTitle', isEqualTo: habitTitle)
-        .get();
+    final snapshot =
+        await _firestore
+            .collection('entries')
+            .where('habitTitle', isEqualTo: habitTitle)
+            .get();
 
     for (final doc in snapshot.docs) {
       await doc.reference.delete();
     }
   }
-
 
   Future<void> pushAllEntries() async {
     final database = await _dbHelper.database;
@@ -86,12 +88,15 @@ class SyncService {
         final data = doc.data();
 
         final entry = HabitEntry(
-          id:           doc.id,                                                      // 用文档 ID
-          habitTitle:   data['habitTitle']    as String?  ?? 'Unknown Habit',
-          date:         (data['date']          as Timestamp?)?.toDate() ?? DateTime.now(),
-          value:        (data['value']         as num?)?.toDouble()   ?? 0.0,
-          createdAt:    (data['createdAt']    as Timestamp?)?.toDate() ?? DateTime.now(),
-          updatedAt:    (data['updatedAt']    as Timestamp?)?.toDate() ?? DateTime.now(),
+          id: doc.id,
+          // 用文档 ID
+          habitTitle: data['habitTitle'] as String? ?? 'Unknown Habit',
+          date: (data['date'] as Timestamp?)?.toDate() ?? DateTime.now(),
+          value: (data['value'] as num?)?.toDouble() ?? 0.0,
+          createdAt:
+              (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+          updatedAt:
+              (data['updatedAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
         );
 
         await _dbHelper.upsertEntry(entry);
@@ -120,5 +125,14 @@ class SyncService {
         updatedAt: now,
       );
     }
+  }
+
+  Future<void> pushEntry(HabitEntry entry) async {
+    try {
+      await _firestore
+          .collection('entries')
+          .doc(entry.id)
+          .set(entry.toJson(), SetOptions(merge: true));
+    } catch (_) {}
   }
 }

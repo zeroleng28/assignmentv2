@@ -1,14 +1,16 @@
 import 'habits_repository.dart';
 import 'db_helper.dart';
 import 'habit_entry.dart';
+import 'sync_service.dart';
 
 class SqfliteHabitsRepository implements HabitsRepository {
   final DbHelper _db = DbHelper();
 
   @override
-  Future<void> upsertEntry(HabitEntry entry) =>
-      _db.upsertEntry(entry);
-
+  Future<void> upsertEntry(HabitEntry entry) async {
+    await _db.upsertEntry(entry);
+    await SyncService().pushEntry(entry);
+  }
 
   @override
   Future<List<HabitEntry>> fetchLast7Days(String habitTitle) =>
@@ -19,8 +21,7 @@ class SqfliteHabitsRepository implements HabitsRepository {
       _db.fetchMonthlyTotals(habitTitle);
 
   @override
-  Future<void> clearEntries() =>
-      _db.clearEntries();
+  Future<void> clearEntries() => _db.clearEntries();
 
   @override
   Future<void> clearEntriesForHabit(String habitTitle) =>

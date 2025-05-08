@@ -1,6 +1,7 @@
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
+import 'package:uuid/uuid.dart';
 import 'habit_entry.dart';
 
 class DbHelper {
@@ -10,6 +11,63 @@ class DbHelper {
 
   static const _dbName = 'habits.db';
   static const _dbVersion = 7;
+
+  Future<void> deleteAllEntries() async {
+    final db = await database;
+    await db.delete('entries');
+  }
+
+  Future<Database> openDb() async {
+    return openDatabase(
+      join(await getDatabasesPath(), 'steps.db'),
+      onCreate: (db, version) {
+        return db.execute(
+          'CREATE TABLE steps(id INTEGER PRIMARY KEY, value INTEGER, timestamp INTEGER)',
+        );
+      },
+      version: 1,
+    );
+  }
+
+  /// Return the most‑recent Short‑Walk total saved for *today*.
+  /// If no row exists yet, return null.
+  Future<int?> getLastSavedSteps() async {
+    final db = await database;
+    final todayKey = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+    final row = await db.query(
+      'entries',
+      where: 'habitTitle = ? AND substr(date,1,10) = ?',
+      whereArgs: ['Short Walk', todayKey],
+      orderBy: 'updatedAt DESC',
+      limit: 1,
+    );
+
+    if (row.isEmpty) return null;
+    return (row.first['value'] as num).toInt();
+  }
+
+  /// Overwrite today's Short‑Walk row with the new total.
+  Future<void> saveSteps(int steps) async {
+    final db = await database;
+    final today = DateTime.now();
+    final ymd  = DateFormat('yyyy-MM-dd').format(today);
+
+    await db.delete(
+      'entries',
+      where: 'habitTitle = ? AND substr(date,1,10) = ?',
+      whereArgs: ['Short Walk', ymd],
+    );
+
+    await db.insert('entries', {
+      'id'        : const Uuid().v4(),
+      'habitTitle': 'Short Walk',
+      'date'      : today.toIso8601String(),
+      'value'     : steps,
+      'createdAt' : DateTime.now().toIso8601String(),
+      'updatedAt' : DateTime.now().toIso8601String(),
+    });
+  }
 
   Future<void> deleteDay(String habitTitle, DateTime date) async {
     final db = await database;

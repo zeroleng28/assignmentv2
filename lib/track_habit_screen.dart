@@ -1,14 +1,21 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
+import 'package:pedometer/pedometer.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'habit.dart';
+import 'habit_entry.dart';
 import 'habits_repository.dart';
 import 'sqflite_habits_repository.dart';
 import 'db_helper.dart';
-import 'habit.dart';
-import 'habit_entry.dart';
 import 'sync_service.dart';
 import 'interactive_trend_chart.dart';
 import 'edit_habit_screen.dart';
-import 'package:uuid/uuid.dart';
+
+final String userId = 'default_user';
 
 class TrackHabitScreen extends StatefulWidget {
   const TrackHabitScreen({Key? key}) : super(key: key);
@@ -19,47 +26,190 @@ class TrackHabitScreen extends StatefulWidget {
 
 class _TrackHabitScreenState extends State<TrackHabitScreen> {
   final HabitsRepository _repo = SqfliteHabitsRepository();
-  List<Habit> _habits = [
-    Habit(
-      title: 'Reduce Plastic',
-      unit: 'kg',
-      goal: 5.0,
-      currentValue: 0.0,
-      quickAdds: [0.1, 0.5, 1.0],
-    ),
-    Habit(
-      title: 'Short Walk',
-      unit: 'km',
-      goal: 20.0,
-      currentValue: 0.0,
-      quickAdds: [0.5, 1.0, 2.0],
-    ),
-  ];
-  String _selectedHabitTitle = '';
-  List<double> _last7Values = [];
-  List<String> _last7Labels = [];
-  List<HabitEntry> _monthlyTotals = [];
-  DateTime _selectedDate = DateTime.now();
+  late List<Habit> _habits;
 
+  DateTime _selectedDate = DateTime.now();
+  String _selectedHabitTitle = '';
+
+  // chart / table data
+  List<String> _last7Labels = [];
+  List<double> _last7Values = [];
+  List<HabitEntry> _monthlyTotals = [];
+
+  // pedometer
+  StreamSubscription<StepCount>? _stepSub;
+  int? _sensorPrev; // last raw StepCount from sensor
+  int _runningTotal = 0; // what we show & store
+  int? _lastSavedSteps; // last value written to DB
+
+  // ---------------------------------------------------------------------------
   @override
   void initState() {
     super.initState();
+
+    _habits = [
+      Habit(
+        title: 'Reduce Plastic',
+        unit: 'kg',
+        goal: 5,
+        currentValue: 0,
+        quickAdds: const [],
+      ),
+      Habit(
+        title: 'Short Walk',
+        unit: 'steps',
+        goal: 10000,
+        currentValue: 0,
+        quickAdds: const [],
+        usePedometer: true,
+      ),
+    ];
     _selectedHabitTitle = _habits.first.title;
+
     SyncService().start();
+    _initSavedTotal().then((_) {
+      _requestPermission();
+      _startPedometer();
+    });
     _loadAllData();
   }
 
-  Future<void> _pickGlobalDate() async {
-    final today = DateTime.now();
+  @override
+  void dispose() {
+    _stepSub?.cancel();
+    super.dispose();
+  }
+
+  // ---------------------------------------------------------------------------
+  // SQLite helper – read the latest Short‑Walk total for today
+  // ---------------------------------------------------------------------------
+  Future<void> _initSavedTotal() async {
+    _runningTotal = await DbHelper().getLastSavedSteps() ?? 0;
+    _lastSavedSteps = _runningTotal;
+  }
+
+  // ---------------------------------------------------------------------------
+  // PERMISSION
+  // ---------------------------------------------------------------------------
+  Future<void> _requestPermission() async {
+    final st = await Permission.activityRecognition.request();
+    if (!st.isGranted && mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Motion permission denied')));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // PEDOMETER LISTENER
+  // ---------------------------------------------------------------------------
+  void _startPedometer() {
+    final stepIdx = _habits.indexWhere((h) => h.usePedometer);
+    if (stepIdx == -1) return;
+
+    _stepSub = Pedometer.stepCountStream.listen((event) async {
+      final today = DateTime(
+        _selectedDate.year,
+        _selectedDate.month,
+        _selectedDate.day,
+      );
+
+      // ── A.  first event after launch → just remember raw value
+      if (_sensorPrev == null) {
+        _sensorPrev = event.steps;
+        return;
+      }
+
+      // ── B.  delta = currentRaw – prevRaw  (sensor may reset to 0)
+      int delta = event.steps - _sensorPrev!;
+      if (delta < 0) delta = event.steps; // handle sensor reset
+      _sensorPrev = event.steps;
+
+      // ── C.  accumulate and update UI
+      _runningTotal += delta;
+
+      setState(() {
+        final h = _habits[stepIdx];
+        _habits[stepIdx] = h.copyWith(currentValue: _runningTotal.toDouble());
+      });
+
+      // ── D.  write every change
+      if (_lastSavedSteps != _runningTotal) {
+        _lastSavedSteps = _runningTotal;
+
+        await DbHelper().saveSteps(_runningTotal);
+
+        final entry = HabitEntry(
+          id: const Uuid().v4(),
+          habitTitle: 'Short Walk',
+          date: today,
+          value: _runningTotal.toDouble(),
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+        );
+        await _repo.deleteDay('Short Walk', today);
+        await _repo.upsertEntry(entry); // SQLite + Firebase
+        await _loadDataForSelectedHabit(_selectedHabitTitle);
+      }
+    }, onError: (e) => debugPrint('Pedometer error: $e'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // DATA LOADERS
+  // ---------------------------------------------------------------------------
+  Future<void> _loadAllData() async {
+    await _updateCurrentValues();
+    await _loadDataForSelectedHabit(_selectedHabitTitle);
+  }
+
+  Future<void> _updateCurrentValues() async {
+    final key = DateFormat('yyyy-MM-dd').format(_selectedDate);
+    for (var i = 0; i < _habits.length; i++) {
+      final h = _habits[i];
+      if (h.usePedometer) continue; // live updated
+
+      final entries = await _repo.fetchRange(h.title, _selectedDate);
+      final todayTotal = entries
+          .where((e) => DateFormat('yyyy-MM-dd').format(e.date) == key)
+          .fold<double>(0, (s, e) => s + e.value);
+      setState(() => _habits[i] = h.copyWith(currentValue: todayTotal));
+    }
+  }
+
+  Future<void> _loadDataForSelectedHabit(String habitTitle) async {
+    final entries = await _repo.fetchRange(habitTitle, _selectedDate);
+    final fmt = DateFormat('yyyy-MM-dd');
+
+    final daily = <String, double>{};
+    for (var i = 0; i < 7; i++) {
+      final d = DateTime(
+        _selectedDate.year,
+        _selectedDate.month,
+        _selectedDate.day,
+      ).subtract(Duration(days: 6 - i));
+      daily[fmt.format(d)] = 0;
+    }
+    for (final e in entries) {
+      final k = fmt.format(e.date);
+      if (daily.containsKey(k)) daily[k] = daily[k]! + e.value;
+    }
+    final monthly = await _repo.fetchMonthlyTotals(habitTitle);
+    setState(() {
+      _last7Labels = daily.keys.toList();
+      _last7Values = daily.values.toList();
+      _monthlyTotals = monthly;
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI HELPERS
+  // ---------------------------------------------------------------------------
+  Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
       initialDate: _selectedDate,
-      firstDate: today.subtract(const Duration(days: 365)),
-      // 想多远自己设
-      lastDate: today,
-      helpText: 'Choose Date',
-      confirmText: 'Confirm',
-      cancelText: 'Cancel',
+      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+      lastDate: DateTime.now(),
     );
     if (picked != null) {
       setState(() => _selectedDate = picked);
@@ -67,91 +217,70 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
     }
   }
 
-  Future<void> _loadAllData() async {
-    await _updateCurrentValues();
-    await _loadDataForSelectedHabit(_selectedHabitTitle);
-  }
+  Future<void> _showAddHabitDialog() async {
+    final titleCtrl = TextEditingController();
+    final unitCtrl = TextEditingController(text: 'kg');
+    final goalCtrl = TextEditingController(text: '5');
 
-  Future<void> _loadDataForSelectedHabit(String habitTitle) async {
-    final entries = await _repo.fetchRange(habitTitle, _selectedDate);
-    final now = _selectedDate;
-    final dailyMap = <String, double>{};
-    for (var i = 0; i < 7; i++) {
-      final day = DateTime(
-        now.year,
-        now.month,
-        now.day,
-      ).subtract(Duration(days: 6 - i));
-      final key = DateFormat('yyyy-MM-dd').format(day);
-      dailyMap[key] = 0.0;
-    }
-    for (final e in entries) {
-      final key = DateFormat('yyyy-MM-dd').format(e.date);
-      if (dailyMap.containsKey(key)) dailyMap[key] = dailyMap[key]! + e.value;
-    }
-    final monthlyEntries = await _repo.fetchMonthlyTotals(habitTitle);
-    setState(() {
-      _last7Labels = dailyMap.keys.toList();
-      _last7Values = dailyMap.values.toList();
-      _monthlyTotals = monthlyEntries;
-    });
-  }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder:
+          (_) => AlertDialog(
+            title: const Text('Create Habit'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: titleCtrl,
+                  decoration: const InputDecoration(labelText: 'Title'),
+                ),
+                TextField(
+                  controller: unitCtrl,
+                  decoration: const InputDecoration(labelText: 'Unit'),
+                ),
+                TextField(
+                  controller: goalCtrl,
+                  decoration: const InputDecoration(labelText: 'Goal'),
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Add'),
+              ),
+            ],
+          ),
+    );
 
-  Future<void> _updateCurrentValues() async {
-    final dayKey = DateFormat('yyyy-MM-dd').format(_selectedDate);
-
-    for (var i = 0; i < _habits.length; i++) {
-      final h = _habits[i];
-
-      // weekEntries still returns the 7‑day window
-      final weekEntries = await _repo.fetchRange(h.title, _selectedDate);
-
-      // keep ONLY rows whose date == _selectedDate
-      final todayTotal = weekEntries
-          .where((e) =>
-      DateFormat('yyyy-MM-dd').format(e.date) == dayKey)
-          .fold<double>(0, (sum, e) => sum + e.value);
-
+    if (ok == true && titleCtrl.text.trim().isNotEmpty) {
       setState(() {
-        _habits[i] = Habit(
-          title:        h.title,
-          unit:         h.unit,
-          goal:         h.goal,
-          currentValue: todayTotal,   // ← now just that one day
-          quickAdds:    h.quickAdds,
+        _habits.add(
+          Habit(
+            title: titleCtrl.text.trim(),
+            unit: unitCtrl.text.trim(),
+            goal: double.tryParse(goalCtrl.text) ?? 0,
+            currentValue: 0,
+            quickAdds: const [],
+          ),
         );
       });
     }
   }
 
-  Future<void> _clearEntries() async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder:
-          (ctx) => AlertDialog(
-            title: const Text('Confirm Delete'),
-            content: const Text('Are you sure you want to delete all entries?'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancel'),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Confirm'),
-              ),
-            ],
-          ),
-    );
-    if (confirm == true) {
-      await DbHelper().dropAndRecreateEntriesTable();
-      await _loadAllData();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('All entries cleared')));
-    }
+  Future<void> _clearAll() async {
+    await DbHelper().deleteAllEntries();
+    await _loadAllData();
   }
 
+  // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -162,31 +291,11 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.calendar_month),
-            tooltip: 'Choose Date',
-            onPressed: _pickGlobalDate,
-          ),
-          IconButton(
-            icon: const Icon(Icons.cloud_upload),
-            tooltip: 'Sync to Firebase',
-            onPressed: () async {
-              await SyncService().pushAllEntries();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Synced local entries to Firebase'),
-                ),
-              );
-            },
+            onPressed: _pickDate,
           ),
           IconButton(
             icon: const Icon(Icons.delete_sweep),
-            tooltip: 'Reset Database',
-            onPressed: () async {
-              await DbHelper().dropAndRecreateEntriesTable();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Database file deleted')),
-              );
-              await _loadAllData();
-            },
+            onPressed: _clearAll,
           ),
         ],
       ),
@@ -196,21 +305,21 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Record Date：${DateFormat('yyyy-MM-dd').format(_selectedDate)}',
-              style: theme.textTheme.labelLarge,
+              'Date: ${DateFormat('yyyy-MM-dd').format(_selectedDate)}',
+              style: theme.textTheme.titleMedium,
             ),
-            Text('Weekly Habits', style: theme.textTheme.titleLarge),
             const SizedBox(height: 12),
+
             for (var i = 0; i < _habits.length; i++) ...[
               _buildHabitCard(i, theme),
               const SizedBox(height: 16),
             ],
 
-            const SizedBox(height: 24),
+            const Divider(),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Last 7 Days Trend', style: theme.textTheme.titleLarge),
+                Text('Last 7 Days', style: theme.textTheme.titleLarge),
                 DropdownButton<String>(
                   value: _selectedHabitTitle,
                   items:
@@ -222,17 +331,16 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
                             ),
                           )
                           .toList(),
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() => _selectedHabitTitle = value);
-                      _loadDataForSelectedHabit(value);
+                  onChanged: (v) {
+                    if (v != null) {
+                      setState(() => _selectedHabitTitle = v);
+                      _loadDataForSelectedHabit(v);
                     }
                   },
                 ),
               ],
             ),
-
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             InteractiveTrendChart(
               values: _last7Values,
               labels: _last7Labels,
@@ -244,25 +352,30 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
 
             const SizedBox(height: 24),
             Text('Monthly Totals', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             ..._monthlyTotals.map(
               (e) => Text(
-                '${DateFormat('MMMM yyyy').format(e.date)}: ${e.value.toStringAsFixed(1)} ${e.habitTitle}',
+                '${DateFormat('MMMM yyyy').format(e.date)}: ${e.value.toStringAsFixed(1)}',
               ),
             ),
           ],
         ),
       ),
+      floatingActionButton: FloatingActionButton(
+        child: const Icon(Icons.add),
+        tooltip: 'New Habit',
+        onPressed: _showAddHabitDialog,
+      ),
     );
   }
 
+  // ---------------------------------------------------------------------------
   Widget _buildHabitCard(int index, ThemeData theme) {
     final h = _habits[index];
     final progress =
         h.goal == 0 ? 0.0 : (h.currentValue / h.goal).clamp(0.0, 1.0);
 
     return Card(
-      margin: EdgeInsets.zero,
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -274,49 +387,61 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
                 Text(h.title, style: theme.textTheme.titleMedium),
                 IconButton(
                   icon: const Icon(Icons.edit),
-                  onPressed: () async {
-                    // 1) load any existing entry for this habit on _selectedDate
-                    final todayEntries = await _repo.fetchRange(
-                      h.title,
-                      _selectedDate,
-                    ); // uses fetchRange(habitTitle, pivotDate) :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
-                    final existing = todayEntries.isNotEmpty ? todayEntries.first : null;
+                  onPressed:
+                      h.usePedometer
+                          ? null
+                          : () async {
+                            final todayEntries = await _repo.fetchRange(
+                              h.title,
+                              _selectedDate,
+                            );
+                            final key = DateFormat(
+                              'yyyy-MM-dd',
+                            ).format(_selectedDate);
 
-                    // 2) push the editor, passing both habit & existing entry
-                    final result =
-                    await Navigator.push<Map<String, dynamic>>(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => EditHabitScreen(
-                          habit: h,
-                          existingEntry: existing,
-                          initialDate: _selectedDate,
-                        ),
-                      ),
-                    );
-
-                    if (result != null) {
-                      // 3) pull back the updated Habit and the new/updated entry
-                      final updatedHabit = result['habit'] as Habit;
-                      final entry       = result['entry'] as HabitEntry?;
-
-                      // 4) if entry != null, upsert it (this will replace same-ID row)
-                      if (entry != null) {
-                        await _repo.deleteDay(entry.habitTitle, entry.date);  // ← use entry.date
-                        await _repo.upsertEntry(entry);
-                      }
-
-                      setState(() => _habits[index] = updatedHabit);
-                      await _loadAllData();
-                    }
-                  },
+                            HabitEntry? existing;
+                            try {
+                              existing = todayEntries.firstWhere(
+                                (e) =>
+                                    DateFormat('yyyy-MM-dd').format(e.date) ==
+                                    key,
+                              );
+                            } catch (_) {
+                              existing = null; // 今天还没有条目
+                            }
+                            final result =
+                                await Navigator.push<Map<String, dynamic>>(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder:
+                                        (_) => EditHabitScreen(
+                                          habit: h,
+                                          existingEntry: existing,
+                                          initialDate: _selectedDate,
+                                        ),
+                                  ),
+                                );
+                            if (result != null) {
+                              final updated = result['habit'] as Habit;
+                              final entry = result['entry'] as HabitEntry?;
+                              if (entry != null) {
+                                await _repo.deleteDay(
+                                  entry.habitTitle,
+                                  entry.date,
+                                );
+                                await _repo.upsertEntry(entry);
+                              }
+                              setState(() => _habits[index] = updated);
+                              await _loadAllData();
+                            }
+                          },
                 ),
               ],
             ),
             const SizedBox(height: 8),
             LinearProgressIndicator(value: progress),
-            const SizedBox(height: 8),
-            Text('${h.currentValue.toStringAsFixed(1)}/${h.goal} ${h.unit}'),
+            const SizedBox(height: 4),
+            Text('${h.currentValue.toStringAsFixed(2)}/${h.goal} ${h.unit}'),
           ],
         ),
       ),

@@ -50,6 +50,10 @@ dependencies:
 
   intl: ^0.18.0
 
+  pedometer: ^4.1.1
+
+  permission_handler: ^11.0.1
+
 
 dev_dependencies:
   flutter_test:
