@@ -2,7 +2,6 @@ import 'habits_repository.dart';
 import 'db_helper.dart';
 import 'habit_entry.dart';
 import 'sync_service.dart';
-
 class SqfliteHabitsRepository implements HabitsRepository {
   final DbHelper _db = DbHelper();
 

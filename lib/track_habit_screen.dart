@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:uuid/uuid.dart';
 import 'package:pedometer/pedometer.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'habit.dart';
 import 'habit_entry.dart';
@@ -14,6 +12,8 @@ import 'db_helper.dart';
 import 'sync_service.dart';
 import 'interactive_trend_chart.dart';
 import 'edit_habit_screen.dart';
+import 'step_entry.dart';
+import 'sqflite_steps_repository.dart';
 
 final String userId = 'default_user';
 
@@ -133,25 +133,24 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
         _habits[stepIdx] = h.copyWith(currentValue: _runningTotal.toDouble());
       });
 
-      // ── D.  write every change
-      if (_lastSavedSteps != _runningTotal) {
-        _lastSavedSteps = _runningTotal;
+      final todayId = DateFormat('yyyy-MM-dd').format(today);
 
-        await DbHelper().saveSteps(_runningTotal);
+      final stepEntry = StepEntry(
+        id: todayId,
+        day: today,
+        count: _runningTotal.toDouble(),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
 
-        final entry = HabitEntry(
-          id: const Uuid().v4(),
-          habitTitle: 'Short Walk',
-          date: today,
-          value: _runningTotal.toDouble(),
-          createdAt: DateTime.now(),
-          updatedAt: DateTime.now(),
-        );
-        await _repo.deleteDay('Short Walk', today);
-        await _repo.upsertEntry(entry); // SQLite + Firebase
-        await _loadDataForSelectedHabit(_selectedHabitTitle);
-      }
-    }, onError: (e) => debugPrint('Pedometer error: $e'));
+      await SqfliteStepsRepository().upsert(stepEntry);
+
+      final last7 = await SqfliteStepsRepository().fetchLast7Days();
+      setState(() {
+        _last7Labels = last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
+        _last7Values = last7.map((e) => e.count).toList();
+      });
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -169,34 +168,75 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
       if (h.usePedometer) continue; // live updated
 
       final entries = await _repo.fetchRange(h.title, _selectedDate);
-      final todayTotal = entries
-          .where((e) => DateFormat('yyyy-MM-dd').format(e.date) == key)
-          .fold<double>(0, (s, e) => s + e.value);
+      final todayEntries = entries.where(
+        (e) => DateFormat('yyyy-MM-dd').format(e.date) == key,
+      );
+      final todayTotal =
+          todayEntries.isEmpty
+              ? 0.0
+              : todayEntries
+                  .reduce((a, b) => a.updatedAt.isAfter(b.updatedAt) ? a : b)
+                  .value;
       setState(() => _habits[i] = h.copyWith(currentValue: todayTotal));
     }
   }
 
   Future<void> _loadDataForSelectedHabit(String habitTitle) async {
-    final entries = await _repo.fetchRange(habitTitle, _selectedDate);
-    final fmt = DateFormat('yyyy-MM-dd');
+    final isStep = _habits
+        .firstWhere((h) => h.title == habitTitle)
+        .usePedometer;
 
-    final daily = <String, double>{};
-    for (var i = 0; i < 7; i++) {
-      final d = DateTime(
-        _selectedDate.year,
-        _selectedDate.month,
-        _selectedDate.day,
-      ).subtract(Duration(days: 6 - i));
-      daily[fmt.format(d)] = 0;
+
+    if (isStep) {
+      _selectedDate = DateTime.now();
+
+      final last7 = await SqfliteStepsRepository().fetchLast7Days();
+      final labels = last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
+      final values = last7.map((e) => e.count).toList();
+
+      final stepMonths = await SqfliteStepsRepository().fetchMonthlyTotals();
+      _monthlyTotals = stepMonths.map((e) => HabitEntry(
+        id: e.id,
+        habitTitle: habitTitle,
+        date: e.day,
+        value: e.count,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+      )).toList();
+
+      setState(() {
+        _last7Labels  = labels;
+        _last7Values  = values;
+        _monthlyTotals = _monthlyTotals;
+      });
+      return;
     }
+
+    // ── Else: existing ‘entries’ logic :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+    final entries = await _repo.fetchRange(habitTitle, _selectedDate);
+    final fmt     = DateFormat('yyyy-MM-dd');
+    final daily   = <String, double>{};
+
+    // init last 7 calendar days
+    for (var i = 0; i < 7; i++) {
+      final d = _selectedDate.subtract(Duration(days: 6 - i));
+      daily[fmt.format(d)] = 0.0;
+    }
+    // sum up the latest-per-day (your existing fix)
+    final latestPerDay = <String, HabitEntry>{};
     for (final e in entries) {
       final k = fmt.format(e.date);
-      if (daily.containsKey(k)) daily[k] = daily[k]! + e.value;
+      if (!latestPerDay.containsKey(k) ||
+          e.updatedAt.isAfter(latestPerDay[k]!.updatedAt)) {
+        latestPerDay[k] = e;
+      }
     }
+    latestPerDay.forEach((k, e) => daily[k] = e.value);
+
     final monthly = await _repo.fetchMonthlyTotals(habitTitle);
     setState(() {
-      _last7Labels = daily.keys.toList();
-      _last7Values = daily.values.toList();
+      _last7Labels   = daily.keys.toList();
+      _last7Values   = daily.values.toList();
       _monthlyTotals = monthly;
     });
   }
@@ -213,7 +253,8 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
     );
     if (picked != null) {
       setState(() => _selectedDate = picked);
-      await _loadAllData();
+      await _updateCurrentValues();
+      await _loadDataForSelectedHabit(_selectedHabitTitle);
     }
   }
 
@@ -372,10 +413,10 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
   // ---------------------------------------------------------------------------
   Widget _buildHabitCard(int index, ThemeData theme) {
     final h = _habits[index];
-    final progress =
-        h.goal == 0 ? 0.0 : (h.currentValue / h.goal).clamp(0.0, 1.0);
+    final progress = h.goal == 0 ? 0.0 : (h.currentValue / h.goal).clamp(0.0, 1.0);
 
     return Card(
+      color: h.usePedometer ? Colors.green.shade100 : null,  // Differentiate color
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -385,57 +426,44 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(h.title, style: theme.textTheme.titleMedium),
-                IconButton(
-                  icon: const Icon(Icons.edit),
-                  onPressed:
-                      h.usePedometer
-                          ? null
-                          : () async {
-                            final todayEntries = await _repo.fetchRange(
-                              h.title,
-                              _selectedDate,
-                            );
-                            final key = DateFormat(
-                              'yyyy-MM-dd',
-                            ).format(_selectedDate);
+                if (!h.usePedometer) // Do not display edit button for Short Walk
+                  IconButton(
+                    icon: const Icon(Icons.edit),
+                    onPressed: () async {
+                      final todayEntries = await _repo.fetchRange(h.title, _selectedDate);
+                      final key = DateFormat('yyyy-MM-dd').format(_selectedDate);
 
-                            HabitEntry? existing;
-                            try {
-                              existing = todayEntries.firstWhere(
-                                (e) =>
-                                    DateFormat('yyyy-MM-dd').format(e.date) ==
-                                    key,
-                              );
-                            } catch (_) {
-                              existing = null; // 今天还没有条目
-                            }
-                            final result =
-                                await Navigator.push<Map<String, dynamic>>(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder:
-                                        (_) => EditHabitScreen(
-                                          habit: h,
-                                          existingEntry: existing,
-                                          initialDate: _selectedDate,
-                                        ),
-                                  ),
-                                );
-                            if (result != null) {
-                              final updated = result['habit'] as Habit;
-                              final entry = result['entry'] as HabitEntry?;
-                              if (entry != null) {
-                                await _repo.deleteDay(
-                                  entry.habitTitle,
-                                  entry.date,
-                                );
-                                await _repo.upsertEntry(entry);
-                              }
-                              setState(() => _habits[index] = updated);
-                              await _loadAllData();
-                            }
-                          },
-                ),
+                      HabitEntry? existing;
+                      try {
+                        existing = todayEntries.firstWhere(
+                              (e) => DateFormat('yyyy-MM-dd').format(e.date) == key,
+                        );
+                      } catch (_) {
+                        existing = null;
+                      }
+
+                      final result = await Navigator.push<Map<String, dynamic>>(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => EditHabitScreen(
+                            habit: h,
+                            existingEntry: existing,
+                            initialDate: _selectedDate,
+                          ),
+                        ),
+                      );
+                      if (result != null) {
+                        final updated = result['habit'] as Habit;
+                        final entry = result['entry'] as HabitEntry?;
+                        if (entry != null) {
+                          await _repo.deleteDay(entry.habitTitle, entry.date);
+                          await _repo.upsertEntry(entry);
+                        }
+                        setState(() => _habits[index] = updated);
+                        await _loadAllData();
+                      }
+                    },
+                  ),
               ],
             ),
             const SizedBox(height: 8),
@@ -447,4 +475,5 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
       ),
     );
   }
+
 }

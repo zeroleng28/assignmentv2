@@ -6,7 +6,9 @@ import 'habit_entry.dart';
 
 class DbHelper {
   static final DbHelper _instance = DbHelper._();
+
   factory DbHelper() => _instance;
+
   DbHelper._();
 
   static const _dbName = 'habits.db';
@@ -29,29 +31,27 @@ class DbHelper {
     );
   }
 
-  /// Return the most‑recent Short‑Walk total saved for *today*.
-  /// If no row exists yet, return null.
+// Proper implementation for getting today's step count
   Future<int?> getLastSavedSteps() async {
     final db = await database;
     final todayKey = DateFormat('yyyy-MM-dd').format(DateTime.now());
 
-    final row = await db.query(
-      'entries',
-      where: 'habitTitle = ? AND substr(date,1,10) = ?',
-      whereArgs: ['Short Walk', todayKey],
-      orderBy: 'updatedAt DESC',
+    final rows = await db.query(
+      'steps',
+      where: 'day = ?',
+      whereArgs: [todayKey],
       limit: 1,
     );
 
-    if (row.isEmpty) return null;
-    return (row.first['value'] as num).toInt();
+    if (rows.isEmpty) return null;
+    return (rows.first['count'] as num).toInt();
   }
 
   /// Overwrite today's Short‑Walk row with the new total.
   Future<void> saveSteps(int steps) async {
     final db = await database;
     final today = DateTime.now();
-    final ymd  = DateFormat('yyyy-MM-dd').format(today);
+    final ymd = DateFormat('yyyy-MM-dd').format(today);
 
     await db.delete(
       'entries',
@@ -60,21 +60,21 @@ class DbHelper {
     );
 
     await db.insert('entries', {
-      'id'        : const Uuid().v4(),
+      'id': const Uuid().v4(),
       'habitTitle': 'Short Walk',
-      'date'      : today.toIso8601String(),
-      'value'     : steps,
-      'createdAt' : DateTime.now().toIso8601String(),
-      'updatedAt' : DateTime.now().toIso8601String(),
+      'date': today.toIso8601String(),
+      'value': steps,
+      'createdAt': DateTime.now().toIso8601String(),
+      'updatedAt': DateTime.now().toIso8601String(),
     });
   }
 
   Future<void> deleteDay(String habitTitle, DateTime date) async {
     final db = await database;
-    final key = DateFormat('yyyy-MM-dd').format(date);     // "2025-05-05"
+    final key = DateFormat('yyyy-MM-dd').format(date); // "2025-05-05"
     await db.delete(
       'entries',
-      where: 'habitTitle = ? AND substr(date,1,10) = ?',   // YYYY-MM-DD
+      where: 'habitTitle = ? AND substr(date,1,10) = ?', // YYYY-MM-DD
       whereArgs: [habitTitle, key],
     );
   }
@@ -86,6 +86,7 @@ class DbHelper {
   }
 
   Database? _database;
+
   Future<Database> get database async {
     if (_database != null) return _database!;
     final path = join(await getDatabasesPath(), _dbName);
@@ -93,17 +94,16 @@ class DbHelper {
       path,
       version: _dbVersion,
       onConfigure: _onConfigure,
-      onCreate:    _onCreate,
-      onUpgrade:   _onUpgrade,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
     return _database!;
   }
 
   Future<void> clearEntriesForHabit(String habitTitle) async {
     final db = await database;
-    final cutoff = DateTime.now()
-        .subtract(const Duration(days: 6))
-        .toIso8601String();
+    final cutoff =
+        DateTime.now().subtract(const Duration(days: 6)).toIso8601String();
     await db.delete(
       'entries',
       where: 'habitTitle = ? AND date >= ?',
@@ -115,7 +115,8 @@ class DbHelper {
   Future<void> _onConfigure(Database db) async {
     final info = await db.rawQuery("PRAGMA table_info('entries')");
     // If table exists and date column is not TEXT, migrate:
-    if (info.isNotEmpty && !info.any((c) => c['name'] == 'date' && c['type'] == 'TEXT')) {
+    if (info.isNotEmpty &&
+        !info.any((c) => c['name'] == 'date' && c['type'] == 'TEXT')) {
       await db.execute('ALTER TABLE entries RENAME TO entries_old');
       await _onCreate(db, _dbVersion);
       await db.execute('''
@@ -128,16 +129,34 @@ class DbHelper {
   }
 
   Future<void> _onCreate(Database db, int version) async {
+    // Create your existing entries table
     await db.execute('''
-      CREATE TABLE entries (
-        id         TEXT PRIMARY KEY,
-        habitTitle TEXT,
-        date       TEXT,
-        value      REAL,
-        createdAt  TEXT,
-        updatedAt  TEXT
-      )
-    ''');
+    CREATE TABLE entries (
+      id         TEXT PRIMARY KEY,
+      habitTitle TEXT,
+      date       TEXT,
+      value      REAL,
+      createdAt  TEXT,
+      updatedAt  TEXT
+    )
+  ''');
+
+    // Create the new steps table
+    await db.execute('''
+    CREATE TABLE steps (
+      id         TEXT    PRIMARY KEY,
+      day        TEXT    NOT NULL,
+      count      REAL    NOT NULL,
+      createdAt  TEXT    NOT NULL,
+      updatedAt  TEXT    NOT NULL
+    )
+  ''');
+
+    // Add a unique index on the day column
+    await db.execute('''
+    CREATE UNIQUE INDEX idx_steps_day
+      ON steps(day)
+  ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldV, int newV) async {
@@ -154,30 +173,24 @@ class DbHelper {
   ''');
   }
 
-
   /// Insert or replace an entry, storing all dates as ISO-8601 strings.
   Future<void> upsertEntry(HabitEntry entry) async {
     final db = await database;
-    await db.insert(
-      'entries',
-      {
-        'id':        entry.id,
-        'habitTitle': entry.habitTitle,
-        'date':      entry.date.toIso8601String(),
-        'value':     entry.value,
-        'createdAt': entry.createdAt.toIso8601String(),
-        'updatedAt': entry.updatedAt.toIso8601String(),
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    await db.insert('entries', {
+      'id': entry.id,
+      'habitTitle': entry.habitTitle,
+      'date': entry.date.toIso8601String(),
+      'value': entry.value,
+      'createdAt': entry.createdAt.toIso8601String(),
+      'updatedAt': entry.updatedAt.toIso8601String(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   /// Fetch last 7 days for the given habit, parsing ISO strings back to DateTime.
   Future<List<HabitEntry>> fetchLast7Days(String habitTitle) async {
     final db = await database;
-    final cutoff = DateTime.now()
-        .subtract(const Duration(days: 6))
-        .toIso8601String();
+    final cutoff =
+        DateTime.now().subtract(const Duration(days: 6)).toIso8601String();
 
     final rows = await db.query(
       'entries',
@@ -188,12 +201,12 @@ class DbHelper {
 
     return rows.map((r) {
       return HabitEntry(
-        id:         r['id'] as String,
+        id: r['id'] as String,
         habitTitle: r['habitTitle'] as String,
-        date:       DateTime.parse(r['date'] as String),
-        value:      (r['value'] as num).toDouble(),
-        createdAt:  DateTime.parse(r['createdAt'] as String),
-        updatedAt:  DateTime.parse(r['updatedAt'] as String),
+        date: DateTime.parse(r['date'] as String),
+        value: (r['value'] as num).toDouble(),
+        createdAt: DateTime.parse(r['createdAt'] as String),
+        updatedAt: DateTime.parse(r['updatedAt'] as String),
       );
     }).toList();
   }
@@ -215,18 +228,18 @@ class DbHelper {
     );
 
     return rows.map((r) {
-      final ym = r['ym'] as String;      // e.g. "2025-05"
+      final ym = r['ym'] as String; // e.g. "2025-05"
       final parts = ym.split('-');
-      final year  = int.parse(parts[0]);
+      final year = int.parse(parts[0]);
       final month = int.parse(parts[1]);
 
       return HabitEntry(
-        id:         '$habitTitle-$ym',
+        id: '$habitTitle-$ym',
         habitTitle: habitTitle,
-        date:       DateTime(year, month),
-        value:      (r['total'] as num).toDouble(),
-        createdAt:  DateTime.now(),
-        updatedAt:  DateTime.now(),
+        date: DateTime(year, month),
+        value: (r['total'] as num).toDouble(),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
       );
     }).toList();
   }
@@ -253,11 +266,21 @@ class DbHelper {
 
   Future<List<HabitEntry>> fetchRange(String habitTitle, DateTime pivot) async {
     final db = await database;
-    final start = DateTime(pivot.year, pivot.month, pivot.day)
-        .subtract(const Duration(days: 6))
-        .toIso8601String();
-    final end   = DateTime(pivot.year, pivot.month, pivot.day, 23, 59, 59)
-        .toIso8601String();
+    final start =
+        DateTime(
+          pivot.year,
+          pivot.month,
+          pivot.day,
+        ).subtract(const Duration(days: 6)).toIso8601String();
+    final end =
+        DateTime(
+          pivot.year,
+          pivot.month,
+          pivot.day,
+          23,
+          59,
+          59,
+        ).toIso8601String();
 
     final rows = await db.query(
       'entries',
@@ -266,13 +289,68 @@ class DbHelper {
       orderBy: 'date ASC',
     );
 
-    return rows.map((r) => HabitEntry(
-      id:         r['id'] as String,
-      habitTitle: r['habitTitle'] as String,
-      date:       DateTime.parse(r['date'] as String),
-      value:      (r['value'] as num).toDouble(),
-      createdAt:  DateTime.parse(r['createdAt'] as String),
-      updatedAt:  DateTime.parse(r['updatedAt'] as String),
-    )).toList();
+    return rows
+        .map(
+          (r) => HabitEntry(
+            id: r['id'] as String,
+            habitTitle: r['habitTitle'] as String,
+            date: DateTime.parse(r['date'] as String),
+            value: (r['value'] as num).toDouble(),
+            createdAt: DateTime.parse(r['createdAt'] as String),
+            updatedAt: DateTime.parse(r['updatedAt'] as String),
+          ),
+        )
+        .toList();
+  }
+
+  Future<List<HabitEntry>> fetchRangeLatest(
+    String habit,
+    DateTime pivot,
+  ) async {
+    final db = await database;
+    final start =
+        DateTime(
+          pivot.year,
+          pivot.month,
+          pivot.day,
+        ).subtract(const Duration(days: 6)).toIso8601String();
+    final end =
+        DateTime(
+          pivot.year,
+          pivot.month,
+          pivot.day,
+          23,
+          59,
+          59,
+        ).toIso8601String();
+
+    final rows = await db.rawQuery(
+      '''
+    SELECT e.*
+    FROM entries e
+    JOIN (
+      SELECT substr(date,1,10) AS d, MAX(updatedAt) AS maxUpd
+      FROM entries
+      WHERE habitTitle = ? AND date BETWEEN ? AND ?
+      GROUP BY d
+    ) latest
+    ON substr(e.date,1,10) = latest.d AND e.updatedAt = latest.maxUpd
+    ORDER BY e.date ASC
+  ''',
+      [habit, start, end],
+    );
+
+    return rows
+        .map(
+          (r) => HabitEntry(
+            id: r['id'] as String,
+            habitTitle: r['habitTitle'] as String,
+            date: DateTime.parse(r['date'] as String),
+            value: (r['value'] as num).toDouble(),
+            createdAt: DateTime.parse(r['createdAt'] as String),
+            updatedAt: DateTime.parse(r['updatedAt'] as String),
+          ),
+        )
+        .toList();
   }
 }

@@ -9,7 +9,6 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await DbHelper().deleteDatabaseFile();
   await Firebase.initializeApp();
   SyncService().start();
   runApp(const HabitTrackerApp());
