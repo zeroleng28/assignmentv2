@@ -51,7 +51,7 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
       Habit(
         title: 'Reduce Plastic',
         unit: 'kg',
-        goal: 5,
+        goal: 10,
         currentValue: 0,
         quickAdds: const [],
       ),
@@ -186,22 +186,23 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
         .firstWhere((h) => h.title == habitTitle)
         .usePedometer;
 
-
     if (isStep) {
       _selectedDate = DateTime.now();
 
       final last7 = await SqfliteStepsRepository().fetchLast7Days();
-      final labels = last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
+      final labels = last7
+          .map((e) => DateFormat('yyyy-MM-dd').format(e.day))
+          .toList();
       final values = last7.map((e) => e.count).toList();
 
       final stepMonths = await SqfliteStepsRepository().fetchMonthlyTotals();
       _monthlyTotals = stepMonths.map((e) => HabitEntry(
-        id: e.id,
+        id        : e.id,
         habitTitle: habitTitle,
-        date: e.day,
-        value: e.count,
-        createdAt: e.createdAt,
-        updatedAt: e.updatedAt,
+        date      : e.day,
+        value     : e.count,
+        createdAt : e.createdAt,
+        updatedAt : e.updatedAt,
       )).toList();
 
       setState(() {
@@ -469,7 +470,11 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
             const SizedBox(height: 8),
             LinearProgressIndicator(value: progress),
             const SizedBox(height: 4),
-            Text('${h.currentValue.toStringAsFixed(2)}/${h.goal} ${h.unit}'),
+            Text(
+              h.usePedometer
+                  ? '${h.currentValue.toInt()}/${h.goal.toInt()} ${h.unit}'    // integer for Short Walk
+                  : '${h.currentValue.toStringAsFixed(2)}/${h.goal} ${h.unit}', // double for normal habits
+            ),
           ],
         ),
       ),
