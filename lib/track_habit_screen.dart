@@ -25,6 +25,7 @@ class TrackHabitScreen extends StatefulWidget {
 }
 
 class _TrackHabitScreenState extends State<TrackHabitScreen> {
+  String user_email = 'alice@example.com';   //sample user email
   final HabitsRepository _repo = SqfliteHabitsRepository();
   late List<Habit> _habits;
 
@@ -137,6 +138,7 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
 
       final stepEntry = StepEntry(
         id: todayId,
+        user_email: user_email,
         day: today,
         count: _runningTotal.toDouble(),
         createdAt: DateTime.now(),
@@ -145,7 +147,7 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
 
       await SqfliteStepsRepository().upsert(stepEntry);
 
-      final last7 = await SqfliteStepsRepository().fetchLast7Days();
+      final last7 = await SqfliteStepsRepository().fetchLast7Days(user_email);
       setState(() {
         _last7Labels =
             last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
@@ -168,7 +170,7 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
       final h = _habits[i];
       if (h.usePedometer) continue; // live updated
 
-      final entries = await _repo.fetchRange(h.title, _selectedDate);
+      final entries = await _repo.fetchRange(user_email, h.title, _selectedDate);
       final todayEntries = entries.where(
         (e) => DateFormat('yyyy-MM-dd').format(e.date) == key,
       );
@@ -189,17 +191,18 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
     if (isStep) {
       _selectedDate = DateTime.now();
 
-      final last7 = await SqfliteStepsRepository().fetchLast7Days();
+      final last7 = await SqfliteStepsRepository().fetchLast7Days(user_email);
       final labels =
           last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
       final values = last7.map((e) => e.count).toList();
 
-      final stepMonths = await SqfliteStepsRepository().fetchMonthlyTotals();
+      final stepMonths = await SqfliteStepsRepository().fetchMonthlyTotals(user_email);
       _monthlyTotals =
           stepMonths
               .map(
                 (e) => HabitEntry(
                   id: e.id,
+                  user_email: e.user_email,
                   habitTitle: habitTitle,
                   date: e.day,
                   value: e.count,
@@ -218,7 +221,7 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
     }
 
     // ── Else: existing ‘entries’ logic :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
-    final entries = await _repo.fetchRange(habitTitle, _selectedDate);
+    final entries = await _repo.fetchRange(user_email, habitTitle, _selectedDate);
     final fmt = DateFormat('yyyy-MM-dd');
     final daily = <String, double>{};
 
@@ -238,7 +241,7 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
     }
     latestPerDay.forEach((k, e) => daily[k] = e.value);
 
-    final monthly = await _repo.fetchMonthlyTotals(habitTitle);
+    final monthly = await _repo.fetchMonthlyTotals(user_email, habitTitle);
     setState(() {
       _last7Labels = daily.keys.toList();
       _last7Values = daily.values.toList();
@@ -456,6 +459,7 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
                     icon: const Icon(Icons.edit),
                     onPressed: () async {
                       final todayEntries = await _repo.fetchRange(
+                        user_email,
                         h.title,
                         _selectedDate,
                       );

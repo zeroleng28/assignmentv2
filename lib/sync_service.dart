@@ -46,6 +46,7 @@ class SyncService {
     for (final r in rows) {
       final entry = HabitEntry(
         id: r['id'] as String,
+        user_email: r['user_email'] as String,
         habitTitle: r['habitTitle'] as String,
         date: DateTime.parse(r['date'] as String),
         value: (r['value'] as num).toDouble(),
@@ -68,6 +69,7 @@ class SyncService {
         // ② parse ISO-8601 strings back to DateTime
         final entry = HabitEntry(
           id: r['id'] as String,
+          user_email: r['user_email'] as String,
           habitTitle: r['habitTitle'] as String,
           date: DateTime.parse(r['date'] as String),
           value: (r['value'] as num).toDouble(),
@@ -89,7 +91,7 @@ class SyncService {
 
         final entry = HabitEntry(
           id: doc.id,
-          // 用文档 ID
+          user_email: data['user_email'] as String? ?? 'Unknown',
           habitTitle: data['habitTitle'] as String? ?? 'Unknown Habit',
           date: (data['date'] as Timestamp?)?.toDate() ?? DateTime.now(),
           value: (data['value'] as num?)?.toDouble() ?? 0.0,
@@ -114,10 +116,11 @@ class SyncService {
     });
 
     /// Helper to create a new entry with UUID and timestamps
-    HabitEntry createEntry(String habitTitle, DateTime date, double value) {
+    HabitEntry createEntry(String user_email, String habitTitle, DateTime date, double value) {
       final now = DateTime.now();
       return HabitEntry(
         id: const Uuid().v4(),
+        user_email: user_email,
         habitTitle: habitTitle,
         date: date,
         value: value,

@@ -4,12 +4,16 @@ import 'track_habit_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'sync_service.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'db_helper.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
+  // await DbHelper().deleteDatabaseFile();
+  await DbHelper().dumpSchema();
+  await DbHelper().dumpCounts();
   SyncService().start();
   runApp(const HabitTrackerApp());
 }
@@ -32,7 +36,7 @@ class HabitTrackerApp extends StatelessWidget {
           elevation: 2,                          // shadow
           shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(
-              bottom: Radius.circular(100),
+              bottom: Radius.circular(30),
             ),
           ),
         ),

@@ -94,6 +94,7 @@ class _EditHabitScreenState extends State<EditHabitScreen> {
 
     final entry = HabitEntry(
       id: id,
+      user_email: 'alice@example.com',
       habitTitle: title,
       date: DateTime(_entryDate.year, _entryDate.month, _entryDate.day),
       value: clampedValue,
