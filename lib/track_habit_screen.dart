@@ -147,7 +147,8 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
 
       final last7 = await SqfliteStepsRepository().fetchLast7Days();
       setState(() {
-        _last7Labels = last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
+        _last7Labels =
+            last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
         _last7Values = last7.map((e) => e.count).toList();
       });
     });
@@ -182,32 +183,35 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
   }
 
   Future<void> _loadDataForSelectedHabit(String habitTitle) async {
-    final isStep = _habits
-        .firstWhere((h) => h.title == habitTitle)
-        .usePedometer;
+    final isStep =
+        _habits.firstWhere((h) => h.title == habitTitle).usePedometer;
 
     if (isStep) {
       _selectedDate = DateTime.now();
 
       final last7 = await SqfliteStepsRepository().fetchLast7Days();
-      final labels = last7
-          .map((e) => DateFormat('yyyy-MM-dd').format(e.day))
-          .toList();
+      final labels =
+          last7.map((e) => DateFormat('yyyy-MM-dd').format(e.day)).toList();
       final values = last7.map((e) => e.count).toList();
 
       final stepMonths = await SqfliteStepsRepository().fetchMonthlyTotals();
-      _monthlyTotals = stepMonths.map((e) => HabitEntry(
-        id        : e.id,
-        habitTitle: habitTitle,
-        date      : e.day,
-        value     : e.count,
-        createdAt : e.createdAt,
-        updatedAt : e.updatedAt,
-      )).toList();
+      _monthlyTotals =
+          stepMonths
+              .map(
+                (e) => HabitEntry(
+                  id: e.id,
+                  habitTitle: habitTitle,
+                  date: e.day,
+                  value: e.count,
+                  createdAt: e.createdAt,
+                  updatedAt: e.updatedAt,
+                ),
+              )
+              .toList();
 
       setState(() {
-        _last7Labels  = labels;
-        _last7Values  = values;
+        _last7Labels = labels;
+        _last7Values = values;
         _monthlyTotals = _monthlyTotals;
       });
       return;
@@ -215,8 +219,8 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
 
     // ── Else: existing ‘entries’ logic :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
     final entries = await _repo.fetchRange(habitTitle, _selectedDate);
-    final fmt     = DateFormat('yyyy-MM-dd');
-    final daily   = <String, double>{};
+    final fmt = DateFormat('yyyy-MM-dd');
+    final daily = <String, double>{};
 
     // init last 7 calendar days
     for (var i = 0; i < 7; i++) {
@@ -236,8 +240,8 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
 
     final monthly = await _repo.fetchMonthlyTotals(habitTitle);
     setState(() {
-      _last7Labels   = daily.keys.toList();
-      _last7Values   = daily.values.toList();
+      _last7Labels = daily.keys.toList();
+      _last7Values = daily.values.toList();
       _monthlyTotals = monthly;
     });
   }
@@ -327,35 +331,49 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
+      // backgroundColor: Colors.lightGreen.shade100,
       appBar: AppBar(
         title: const Text('Habit Tracking'),
         centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.calendar_month),
-            onPressed: _pickDate,
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_sweep),
-            onPressed: _clearAll,
-          ),
-        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              'Date: ${DateFormat('yyyy-MM-dd').format(_selectedDate)}',
-              style: theme.textTheme.titleMedium,
-            ),
-            const SizedBox(height: 12),
-
-            for (var i = 0; i < _habits.length; i++) ...[
-              _buildHabitCard(i, theme),
+            // First show only the Short Walk card
+            if (_habits.any((h) => h.usePedometer)) ...[
+              _buildHabitCard(_habits.indexWhere((h) => h.usePedometer), theme),
               const SizedBox(height: 16),
             ],
+
+            // Then show all the other habits
+            for (var i = 0; i < _habits.length; i++)
+              if (!_habits[i].usePedometer) ...[
+                // only before Reduce Plastic insert our date + icon row
+                if (_habits[i].title == 'Reduce Plastic') ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Text(
+                        'Date: ${DateFormat('yyyy-MM-dd').format(_selectedDate)}',
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.calendar_month),
+                        onPressed: _pickDate,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                ],
+
+                // now the actual Reduce Plastic card (or any other habit)
+                _buildHabitCard(i, theme),
+                const SizedBox(height: 16),
+              ],
 
             const Divider(),
             Row(
@@ -414,10 +432,15 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
   // ---------------------------------------------------------------------------
   Widget _buildHabitCard(int index, ThemeData theme) {
     final h = _habits[index];
-    final progress = h.goal == 0 ? 0.0 : (h.currentValue / h.goal).clamp(0.0, 1.0);
+    final progress =
+        h.goal == 0 ? 0.0 : (h.currentValue / h.goal).clamp(0.0, 1.0);
 
     return Card(
-      color: h.usePedometer ? Colors.green.shade100 : null,  // Differentiate color
+      color:
+          h.usePedometer
+              ? Colors.lightGreen.shade400
+              : Colors.green.shade300,
+      // Differentiate color
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -427,17 +450,23 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(h.title, style: theme.textTheme.titleMedium),
-                if (!h.usePedometer) // Do not display edit button for Short Walk
+                if (!h
+                    .usePedometer) // Do not display edit button for Short Walk
                   IconButton(
                     icon: const Icon(Icons.edit),
                     onPressed: () async {
-                      final todayEntries = await _repo.fetchRange(h.title, _selectedDate);
-                      final key = DateFormat('yyyy-MM-dd').format(_selectedDate);
+                      final todayEntries = await _repo.fetchRange(
+                        h.title,
+                        _selectedDate,
+                      );
+                      final key = DateFormat(
+                        'yyyy-MM-dd',
+                      ).format(_selectedDate);
 
                       HabitEntry? existing;
                       try {
                         existing = todayEntries.firstWhere(
-                              (e) => DateFormat('yyyy-MM-dd').format(e.date) == key,
+                          (e) => DateFormat('yyyy-MM-dd').format(e.date) == key,
                         );
                       } catch (_) {
                         existing = null;
@@ -446,11 +475,12 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
                       final result = await Navigator.push<Map<String, dynamic>>(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => EditHabitScreen(
-                            habit: h,
-                            existingEntry: existing,
-                            initialDate: _selectedDate,
-                          ),
+                          builder:
+                              (_) => EditHabitScreen(
+                                habit: h,
+                                existingEntry: existing,
+                                initialDate: _selectedDate,
+                              ),
                         ),
                       );
                       if (result != null) {
@@ -472,13 +502,20 @@ class _TrackHabitScreenState extends State<TrackHabitScreen> {
             const SizedBox(height: 4),
             Text(
               h.usePedometer
-                  ? '${h.currentValue.toInt()}/${h.goal.toInt()} ${h.unit}'    // integer for Short Walk
+                  ? '${h.currentValue.toInt()}/${h.goal.toInt()} ${h.unit}' // integer for Short Walk
                   : '${h.currentValue.toStringAsFixed(2)}/${h.goal} ${h.unit}', // double for normal habits
             ),
+            // For the Short Walk, show the date at the bottom of its card
+            if (h.usePedometer) ...[
+              const SizedBox(height: 8),
+              Text(
+                DateFormat('yyyy-MM-dd').format(DateTime.now()),
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
           ],
         ),
       ),
     );
   }
-
 }
